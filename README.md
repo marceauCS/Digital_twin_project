@@ -1,6 +1,6 @@
 # Motor Condition Monitoring & Regression Models
 
-This project implements a complete pipeline for **motor condition monitoring** and **temperature/voltage prediction** using several regression and classification models.  
+This project implements a complete pipeline for **motor condition monitoring** using several regression and classification models.  
 It includes data preprocessing, feature engineering, model training with hyperparameter tuning, and anomaly detection.
 
 This project was developed as part of an **8-week course**. Some of the code and utility functions were provided by the course instructors. The main development and implementation of the solution were carried out collaboratively by Lucas Tramonte and myself.
