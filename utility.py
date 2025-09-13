@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import copy
 from tqdm import tqdm
 
-
+# Functions already provided in the project
 # We provide some supporting function for training a data-driven digital twin for predicting the temperature of motors.
 
 

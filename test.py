@@ -1,13 +1,3 @@
-# %% [markdown]
-# # Kaggle Regression
-# 
-# 
-
-# %% [markdown]
-# ### Libraries
-
-# %%
-
 import pandas as pd
 import numpy as np
 import sys
@@ -36,10 +26,8 @@ from sklearn.feature_selection import f_regression
 from functions import *
 
 
-# %% [markdown]
+# %% 
 # ### Read data and pre_processing
-
-# %%
 utility_path = '../'
 sys.path.insert(1, utility_path)
 
@@ -47,74 +35,130 @@ sys.path.insert(1, utility_path)
 n_int = 20
 
 # Subfunction for data preprocessing.
-def pre_processing(df: pd.DataFrame):
-    ''' ### Description
-    Preprocess the data:
-    - remove outliers
-    - add new features about the difference between the current and previous n data point.
-    '''
-    
-    # Function to design a Butterworth low-pass filter
-    def butter_lowpass(cutoff, fs, order=5):
-        nyquist = 0.5 * fs
-        normal_cutoff = cutoff / nyquist
+def pre_processing(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    ### Description
+    Preprocess a dataset by performing:
+    - Outlier removal (position, temperature, voltage)
+    - Low-pass filtering and smoothing
+    - Feature engineering (difference between current and previous data points)
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe containing columns:
+        - 'position': Position data (expected range: 0-1000)
+        - 'temperature': Temperature data (expected range: 0-100 °C)
+        - 'voltage': Voltage data (expected range: 6000-8000)
+    """
+
+    # 1. Define Helper Functions
+    def butter_lowpass(cutoff: float, fs: float, order: int = 5):
+        """
+        Design a Butterworth low-pass filter.
+
+        Parameters
+        ----------
+        cutoff : float
+            Cutoff frequency of the filter.
+        fs : float
+            Sampling frequency of the data.
+        order : int, optional
+            Order of the filter (default is 5).
+
+        Returns
+        -------
+        tuple
+            Filter coefficients (b, a).
+        """
+        nyquist = 0.5 * fs  # Nyquist frequency = half of sampling frequency
+        normal_cutoff = cutoff / nyquist  # Normalize cutoff frequency
         b, a = butter(order, normal_cutoff, btype='low', analog=False)
         return b, a
 
+    def lowpass_filter(data: pd.Series, cutoff_freq: float, sampling_freq: float, order: int = 5):
+        """
+        Apply a Butterworth low-pass filter to a signal.
 
-    # Function to apply the Butterworth low-pass filter
-    def lowpass_filter(data, cutoff_freq, sampling_freq, order=5):
+        Parameters
+        ----------
+        data : pd.Series
+            Input data to filter.
+        cutoff_freq : float
+            Cutoff frequency of the filter.
+        sampling_freq : float
+            Sampling frequency of the data.
+        order : int, optional
+            Order of the filter (default is 5).
+
+        Returns
+        -------
+        np.ndarray
+            Filtered data as a NumPy array.
+        """
         b, a = butter_lowpass(cutoff_freq, sampling_freq, order=order)
-        filtered_data = filtfilt(b, a, data)
-        return filtered_data
+        return filtfilt(b, a, data)
 
+    # 2. Filtering Parameters
+    cutoff_frequency = 0.8   # Cutoff frequency for smoothing (adjustable)
+    sampling_frequency = 10  # Sampling frequency (assumes evenly spaced time series)
 
-    # Set parameters for the low-pass filter
-    cutoff_frequency = .8  # Adjust as needed
-    sampling_frequency = 10  # Assuming your data is evenly spaced in time
+    # 3. Outlier Removal & Smoothing
+    def customized_outlier_removal(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Remove outliers and smooth signals for position, temperature, and voltage.
 
+        - Invalid values are replaced with NaN and forward-filled.
+        - Low-pass filtering and rolling averages are applied for smoothing.
+        - Large temperature jumps are treated as anomalies and corrected.
 
-    def customized_outlier_removal(df: pd.DataFrame):
-        ''' # Description
-        Remove outliers from the dataframe based on defined valid ranges. 
-        Define a valid range of temperature and voltage. 
-        Use ffil function to replace the invalid measurement with the previous value.
-        '''
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Dataframe containing position, temperature, and voltage columns.
+
+        Returns
+        -------
+        pd.DataFrame
+            Cleaned and smoothed dataframe.
+        """
+        # ----- POSITION -----
+        # Remove invalid positions outside range [0, 1000]
         df['position'] = df['position'].where(df['position'] <= 1000, np.nan)
         df['position'] = df['position'].where(df['position'] >= 0, np.nan)
-        df['position'] = df['position'].ffill()
+        df['position'] = df['position'].ffill()  # Replace NaNs with last valid value
         df['position'] = lowpass_filter(df['position'], cutoff_frequency, sampling_frequency)
         df['position'] = df['position'].rolling(window=20, min_periods=1).mean()
-        df['position'] = df['position'].round()
+        df['position'] = df['position'].round()  # Round to nearest integer
 
+        # ----- TEMPERATURE -----
+        # Keep only valid temperature range [0, 100 °C]
         df['temperature'] = df['temperature'].where(df['temperature'] <= 100, np.nan)
         df['temperature'] = df['temperature'].where(df['temperature'] >= 0, np.nan)
         df['temperature'] = df['temperature'].rolling(window=20, min_periods=1).mean()
 
-        # Make sure that the difference between the current and previous temperature cannot be too large.
-        # Define your threshold
-        threshold = 5
-        # Shift the 'temperature' column by one row to get the previous temperature
-        prev_tmp = df['temperature'].shift(1)
-        # Calculate the absolute difference between current and previous temperature
+        # Detect and remove large temperature jumps (spikes)
+        threshold = 5  # Max allowed difference between consecutive readings
+        prev_tmp = df['temperature'].shift(1)  # Previous temperature
         temp_diff = np.abs(df['temperature'] - prev_tmp)
-        # Set the temperature to NaN where the difference is larger than the threshold
         df.loc[temp_diff > threshold, 'temperature'] = np.nan
         df['temperature'] = df['temperature'].ffill()
 
+        # ----- VOLTAGE -----
+        # Keep only valid voltage range [6000, 8000]
         df['voltage'] = df['voltage'].where(df['voltage'] >= 6000, np.nan)
         df['voltage'] = df['voltage'].where(df['voltage'] <= 8000, np.nan)
         df['voltage'] = df['voltage'].ffill()
         df['voltage'] = lowpass_filter(df['voltage'], cutoff_frequency, sampling_frequency)
-        df['voltage'] = df['voltage'].rolling(window=5, min_periods=1).mean()  
+        df['voltage'] = df['voltage'].rolling(window=5, min_periods=1).mean()
 
-    # Start processing.
+    # Apply custom outlier removal
     customized_outlier_removal(df)
 
 # Ignore warnings.
 warnings.filterwarnings('ignore')
 
-base_dictionary = r'C:\Users\lucas\Documents\GitHub\digital_twin_robot\projects\maintenance_industry_4_2024\dataset/training_data/'
+base_dictionary = r'C:/Users/marce/Documents/GitHub/digital_twin_robot/projects/maintenance_industry_4_2024/dataset/training_data/'
 df_train = read_all_test_data_from_path(base_dictionary, pre_processing, is_plot=False)
 
 # %%
@@ -143,40 +187,85 @@ normal_test_id = ['20240105_164214',
 
 df_experiment = df_train[df_train['test_condition'].isin(normal_test_id)]
 
-# %% [markdown]
+# %%
 # ### Testing data.
 
 # %%
 # Read all the dataset. Change to your dictionary if needed.
-base_dictionary = r'C:\Users\lucas\Documents\GitHub\digital_twin_robot\projects\maintenance_industry_4_2024\dataset\testing_data/'
+base_dictionary = r'C:/Users/marce/Documents/GitHub/digital_twin_robot/projects/maintenance_industry_4_2024/dataset/testing_data/'
 df_test = read_all_test_data_from_path(base_dictionary, pre_processing, is_plot=False)
 
 # %%
 df_experiment
 
-# %% [markdown]
+# %%
 # ## Training the regression model.
 
 # %%
-def run_all_motors_validation(motor_label, drop_list):
+import warnings
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+
+def run_all_motors_validation(motor_label: int, drop_list: list):
+    """
+    ### Description
+    Train and validate multiple regression models for motor temperature prediction, 
+    perform hyperparameter tuning, and detect abnormal motor behavior.
+
+    This function:
+    - Prepares features and response variables for a given motor.
+    - Applies sliding window feature enrichment for time-series data.
+    - Trains multiple regression models (Linear, Ridge, Lasso, ElasticNet, Decision Tree).
+    - Performs hyperparameter tuning using cross-validation.
+    - Runs fault detection on test data.
+    - Returns model predictions and best hyperparameters.
+
+    Parameters
+    ----------
+    motor_label : int
+        The index or label of the motor for which validation is performed.
+    drop_list : list
+        List of column names to drop from the dataset before model training.
+
+    Returns
+    -------
+    tuple
+        model_predictions : dict
+            Dictionary containing model predictions for each trained model.
+            Keys are formatted as `y_pred_ModelName`.
+        best_params : dict
+            Dictionary containing the best hyperparameters for each model.
+    """
+
+    # 1. Feature Preparation
+    # Remove unnecessary columns and keep relevant features for training.
     feature_list_all = df_experiment.drop(columns=drop_list).columns.tolist()
-    # Prepare feature and response of the training dataset.
-    #x_tr_org, y_temp_tr_org = extract_selected_feature(df_data=df_experiment, feature_list=feature_list_all, motor_idx=motor_label, mdl_type='reg')
+    x_tr_org = df_experiment.drop(columns=drop_list + label_columns)  # Features
+    y_temp_tr_org = df_experiment[f"data_motor_{motor_label}_label"]  # Response variable (labels)
 
-    x_tr_org = df_experiment.drop(columns=drop_list+label_columns)
-    y_temp_tr_org = df_experiment[f"data_motor_{motor_label}_label"]
-    # Enrich the features based on the sliding window.
-    window_size = 70
-    sample_step = 30
-    prediction_lead_time = 5 
-    threshold = .9
-    abnormal_limit = 3
+    # 2. Sliding Window Feature Enrichment
+    # Create time-series enriched features for better temporal learning.
+    window_size = 70              # Number of samples per window
+    sample_step = 30              # Step size to slide the window
+    prediction_lead_time = 5      # How far ahead to predict
+    threshold = 0.9               # Fault detection decision threshold
+    abnormal_limit = 3            # Number of abnormal readings before flagging a fault
 
-    x_tr, y_temp_tr = prepare_sliding_window(df_x=x_tr_org, y=y_temp_tr_org, window_size=window_size, sample_step=sample_step, prediction_lead_time=prediction_lead_time, mdl_type='reg')
-    
-    warnings.filterwarnings('ignore')
-    
-    # Initialize models
+    x_tr, y_temp_tr = prepare_sliding_window(
+        df_x=x_tr_org,
+        y=y_temp_tr_org,
+        window_size=window_size,
+        sample_step=sample_step,
+        prediction_lead_time=prediction_lead_time,
+        mdl_type='reg'
+    )
+
+    warnings.filterwarnings('ignore')  # Suppress warnings during training
+
+    # 3. Model Initialization
     models = {
         'Linear Regression': LinearRegression(),
         'Ridge Regression': Ridge(),
@@ -184,54 +273,87 @@ def run_all_motors_validation(motor_label, drop_list):
         'ElasticNet Regression': ElasticNet(),
         'Decision Tree Regression': DecisionTreeRegressor()
     }
-    
-    # Define hyperparameter grids
+
+    # Define hyperparameter grids for tuning
     param_grids = {
-    'Linear Regression': {},  
-    'Ridge Regression': {'regressor__alpha': [0.001 , 0.01 , 0.1 , 1]},
-    'Lasso Regression': {'regressor__alpha': [0.001 , 0.01 , 0.1 , 1]},
-    'ElasticNet Regression': {'regressor__alpha': [0.001 , 0.01 , 0.1 , 1], 'regressor__l1_ratio': [0.001 , 0.01 , 0.1 , 1]}, 
-    'Decision Tree Regression': {'regressor__max_depth': [2,3,4], 'regressor__min_samples_split': [2,3,4]}
+        'Linear Regression': {},
+        'Ridge Regression': {'alpha': [0.001, 0.01, 0.1, 1]},
+        'Lasso Regression': {'alpha': [0.001, 0.01, 0.1, 1]},
+        'ElasticNet Regression': {
+            'alpha': [0.001, 0.01, 0.1, 1],
+            'l1_ratio': [0.001, 0.01, 0.1, 1]
+        },
+        'Decision Tree Regression': {
+            'max_depth': [2, 3, 4],
+            'min_samples_split': [2, 3, 4]
+        }
     }
-    
+
     model_predictions = {}
     best_params = {}
-    
-    # Perform cross-validation, hyperparameter tuning, and evaluation
+
+    # 4. Model Training, Hyperparameter Tuning & Validation
     for model_name, model in models.items():
-        
+
+        # Build pipeline: normalization → model
         pipeline = Pipeline([
-            ('scaler', MinMaxScaler()), # Step 1 : Normalization
+            ('scaler', MinMaxScaler()),  # Normalize features
             ('model', model)
         ])
+
+        # Format parameter grid for use with pipeline
         param_grid = {f'model__{key}': value for key, value in param_grids[model_name].items()}
-        
-        # Hyperparameter tuning
-        grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring='f1', n_jobs=-1)
-        #grid_search = GridSearchCV(model, param_grids[model_name], cv=5, scoring='f1')
+
+        # Perform grid search cross-validation
+        grid_search = GridSearchCV(
+            pipeline,
+            param_grid,
+            cv=5,
+            scoring='f1',
+            n_jobs=-1
+        )
         grid_search.fit(x_tr, y_temp_tr)
+
+        # Store best model and its parameters
         mdl = grid_search.best_estimator_
         best_params[model_name] = grid_search.best_params_
-        
-        # Define the fault detector.
-        detector_reg = FaultDetectReg(reg_mdl=mdl, threshold=threshold, abnormal_limit=abnormal_limit, window_size=window_size, sample_step=sample_step, pred_lead_time=prediction_lead_time)
-        
-        # Prepare the testing data.
-        x_test_org, y_temp_test_org = extract_selected_feature(df_data=df_test, feature_list=feature_list_all, motor_idx=motor_label, mdl_type='reg')
-        
-        
-        # Make predicition.
-        y_pred, y_response_test_pred = detector_reg.predict(df_x_test=x_test_org, y_response_test=y_temp_test_org, complement_truncation=True)
-        
-        model_predictions[f'y_pred_{model_name.replace(" ", "_")}'] = y_pred 
-    
+
+        # 5. Fault Detection & Model Evaluation
+        # Initialize custom regression-based fault detector
+        detector_reg = FaultDetectReg(
+            reg_mdl=mdl,
+            threshold=threshold,
+            abnormal_limit=abnormal_limit,
+            window_size=window_size,
+            sample_step=sample_step,
+            pred_lead_time=prediction_lead_time
+        )
+
+        # Prepare test data for evaluation
+        x_test_org, y_temp_test_org = extract_selected_feature(
+            df_data=df_test,
+            feature_list=feature_list_all,
+            motor_idx=motor_label,
+            mdl_type='reg'
+        )
+
+        # Make predictions on test set
+        y_pred, y_response_test_pred = detector_reg.predict(
+            df_x_test=x_test_org,
+            y_response_test=y_temp_test_org,
+            complement_truncation=True
+        )
+
+        # Store predictions
+        model_predictions[f'y_pred_{model_name.replace(" ", "_")}'] = y_pred
+
     return model_predictions, best_params
 
 
-# %% [markdown]
+# %% 
 # # Motor 1
 
-# %% [markdown]
+# %% 
 # Feature Selection
 
 # %%
@@ -252,10 +374,10 @@ y_pred1_Decision_Tree_Regression= model_predictions['y_pred_Decision_Tree_Regres
 # %%
 best_params1
 
-# %% [markdown]
+# %% 
 # # Motor 2
 
-# %% [markdown]
+# %% 
 # Feature Selection
 
 # %%
@@ -276,10 +398,10 @@ y_pred2_Decision_Tree_Regression= model_predictions['y_pred_Decision_Tree_Regres
 # %%
 best_params2
 
-# %% [markdown]
+# %% 
 # # Motor 3
 
-# %% [markdown]
+# %% 
 # Feature Selection
 # 
 
@@ -299,10 +421,10 @@ y_pred3_Decision_Tree_Regression= model_predictions['y_pred_Decision_Tree_Regres
 # %%
 best_params3
 
-# %% [markdown]
+# %% 
 # # Motor 4
 
-# %% [markdown]
+# %% 
 # Feature Selection
 
 # %%
@@ -322,10 +444,10 @@ y_pred4_Decision_Tree_Regression= model_predictions['y_pred_Decision_Tree_Regres
 # %%
 best_params4
 
-# %% [markdown]
+# %% 
 # # Motor 5
 
-# %% [markdown]
+# %% 
 # Feature Selection
 
 # %%
@@ -345,10 +467,10 @@ y_pred5_Decision_Tree_Regression= model_predictions['y_pred_Decision_Tree_Regres
 # %%
 best_params5
 
-# %% [markdown]
+# %% 
 # # Motor 6
 
-# %% [markdown]
+# %% 
 # Feature Selection
 
 # %%
@@ -368,10 +490,10 @@ y_pred6_Decision_Tree_Regression= model_predictions['y_pred_Decision_Tree_Regres
 # %%
 best_params6
 
-# %% [markdown]
+# %% 
 # ## Create csv file for submit Prediction
 
-# %% [markdown]
+# %% 
 # Linear_Regression
 
 # %%
@@ -389,7 +511,7 @@ df_Linear_Regression = pd.DataFrame(data_Linear_Regression)
 
 df_Linear_Regression.to_csv('motor_predictions_Linear_Regression.csv', index=False)
 
-# %% [markdown]
+# %% 
 # Ridge_Regression
 
 # %%
@@ -407,7 +529,7 @@ df_Ridge_Regression = pd.DataFrame(data_Ridge_Regression)
 
 df_Ridge_Regression.to_csv('motor_predictions_Ridge_Regression.csv', index=False)
 
-# %% [markdown]
+# %% 
 # Lasso_Regression
 
 # %%
@@ -425,7 +547,7 @@ df_Lasso_Regression = pd.DataFrame(data_Lasso_Regression)
 
 df_Lasso_Regression.to_csv('motor_predictions_Lasso_Regression.csv', index=False)
 
-# %% [markdown]
+# %% 
 # ElasticNet_Regression
 
 # %%
@@ -443,7 +565,7 @@ df_ElasticNet_Regression = pd.DataFrame(data_ElasticNet_Regression)
 
 df_ElasticNet_Regression.to_csv('motor_predictions_ElasticNet_Regression.csv', index=False)
 
-# %% [markdown]
+# %% 
 # Decision_Tree_Regression
 
 # %%
